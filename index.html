@@ -24,14 +24,15 @@
       border-bottom: 3px solid #009b3a;
     }
     h1 { color: #fed100; font-size: 1.5rem; margin-bottom: 8px; }
-    #lobby { margin: 20px; text-align: center; }
-    input, button {
+    #lobby { margin: 20px; text-align: center; background: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; }
+    input, select, button {
       padding: 10px 15px;
       font-size: 1rem;
       border-radius: 5px;
       border: none;
       margin: 5px;
     }
+    select { background: #222; color: #fff; border: 1px solid #555; }
     button {
       background: #009b3a;
       color: white;
@@ -39,6 +40,8 @@
       cursor: pointer;
     }
     button:hover { background: #007a2e; }
+    .setting-group { margin: 12px 0; text-align: left; display: inline-block; }
+    label { display: block; font-size: 0.9rem; color: #aaa; margin-bottom: 4px; }
     #game-container {
       display: none;
       flex-direction: column;
@@ -68,7 +71,6 @@
       min-width: max-content;
     }
     
-    /* --- REALISTIC DOMINO TILE STYLES --- */
     .domino {
       width: 46px;
       height: 88px;
@@ -113,7 +115,6 @@
       border-radius: 50%;
     }
     
-    /* --- HAND STYLES --- */
     #hand-container {
       margin-top: 15px;
       text-align: center;
@@ -147,10 +148,29 @@
   <!-- LOBBY -->
   <div id="lobby">
     <div id="host-controls">
-      <button onclick="createRoom()">Create New Table</button>
+      <h3>Create New Table</h3>
+      <div class="setting-group">
+        <label>Number of Players:</label>
+        <select id="max-players" onchange="updateHandOptions()">
+          <option value="4">4 Players</option>
+          <option value="3">3 Players</option>
+          <option value="2">2 Players</option>
+        </select>
+      </div>
+      <br>
+      <div class="setting-group">
+        <label>Hand Size per Player:</label>
+        <select id="hand-size">
+          <option value="7">7 Tiles</option>
+        </select>
+      </div>
+      <br>
+      <button onclick="createRoom()">Create Table</button>
     </div>
-    <div style="margin-top: 15px;">
-      <input type="text" id="room-input" placeholder="Enter Room Code" />
+    
+    <div style="margin-top: 20px; border-top: 1px solid #441; padding-top: 15px;">
+      <h3>Join Existing Table</h3>
+      <input type="text" id="room-input" placeholder="Enter Room Code/ID" />
       <button onclick="joinRoom()">Join Table</button>
     </div>
   </div>
@@ -177,6 +197,8 @@
 
     let gameState = {
       players: [],
+      maxPlayers: 4,
+      handSize: 7,
       turnIndex: 0,
       board: [],   
       hands: {},   
@@ -204,11 +226,11 @@
       connections.push(conn);
       
       conn.on('open', () => {
-        if (gameState.players.length < 4 && !gameState.gameStarted) {
+        if (gameState.players.length < gameState.maxPlayers && !gameState.gameStarted) {
           gameState.players.push(conn.peer);
-          broadcastStatus(`Player joined (${gameState.players.length}/4)`);
+          broadcastStatus(`Player joined (${gameState.players.length}/${gameState.maxPlayers})`);
           
-          if (gameState.players.length === 4) {
+          if (gameState.players.length === gameState.maxPlayers) {
             startGame();
           }
         }
@@ -217,16 +239,41 @@
       conn.on('data', (data) => handleAction(data, conn.peer));
     });
 
+    function updateHandOptions() {
+      const maxP = parseInt(document.getElementById('max-players').value);
+      const handSelect = document.getElementById('hand-size');
+      handSelect.innerHTML = '';
+
+      if (maxP === 4) {
+        handSelect.innerHTML = `<option value="7">7 Tiles</option>`;
+      } else if (maxP === 3) {
+        handSelect.innerHTML = `
+          <option value="7">7 Tiles</option>
+          <option value="9">9 Tiles</option>
+        `;
+      } else if (maxP === 2) {
+        handSelect.innerHTML = `
+          <option value="7">7 Tiles</option>
+          <option value="14">14 Tiles</option>
+        `;
+      }
+    }
+
     function createRoom() {
       isHost = true;
+      gameState.maxPlayers = parseInt(document.getElementById('max-players').value);
+      gameState.handSize = parseInt(document.getElementById('hand-size').value);
       gameState.players = [myPlayerId];
+
       const roomLink = `${window.location.origin}${window.location.pathname}?room=${myPlayerId}`;
       
       document.getElementById('lobby').innerHTML = `
-        <p>Share this link with 3 friends:</p>
+        <h3>Table Created!</h3>
+        <p>Share this link with friends (${gameState.maxPlayers}-player table):</p>
         <input type="text" value="${roomLink}" readonly style="width: 80%; text-align:center;" id="share-link"/>
+        <br>
         <button onclick="navigator.clipboard.writeText('${roomLink}')">Copy Link</button>
-        <p style="margin-top:10px;">Waiting for players (1/4)...</p>
+        <p style="margin-top:15px; color:#fed100;">Waiting for players (1/${gameState.maxPlayers})...</p>
       `;
       document.getElementById('game-container').style.display = 'flex';
     }
@@ -240,7 +287,7 @@
       hostConn.on('open', () => {
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('game-container').style.display = 'flex';
-        document.getElementById('status').innerText = "Connected! Waiting for host to start...";
+        document.getElementById('status').innerText = "Connected! Waiting for host to start table...";
       });
 
       hostConn.on('data', (data) => updateClient(data));
@@ -263,11 +310,13 @@
       gameState.board = [];
       gameState.gameStarted = true;
       
+      const hSize = gameState.handSize;
       gameState.players.forEach((pId, idx) => {
-        gameState.hands[pId] = deck.slice(idx * 7, (idx + 1) * 7);
+        gameState.hands[pId] = deck.slice(idx * hSize, (idx + 1) * hSize);
       });
 
-      // Find [6-6] player to Pose
+      // Find [6-6] player to Pose (if they have it, otherwise fallback to index 0)
+      gameState.turnIndex = 0;
       gameState.players.forEach((pId, idx) => {
         if (gameState.hands[pId].some(t => t.left === 6 && t.right === 6)) {
           gameState.turnIndex = idx;
@@ -337,7 +386,7 @@
       });
     }
 
-    // --- PIP RENDERING UTILITY ---
+    // --- PIP RENDERING ---
 
     const pipMap = {
       0: [],
