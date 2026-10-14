@@ -24,7 +24,7 @@
       border-bottom: 3px solid #009b3a;
     }
     h1 { color: #fed100; font-size: 1.5rem; margin-bottom: 8px; }
-    #lobby { margin: 20px; text-align: center; background: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; }
+    #lobby { margin: 20px; text-align: center; background: #1e1e1e; padding: 20px; border-radius: 8px; border: 1px solid #333; max-width: 450px; width: 90%; }
     input, select, button {
       padding: 10px 15px;
       font-size: 1rem;
@@ -32,15 +32,16 @@
       border: none;
       margin: 5px;
     }
-    select { background: #222; color: #fff; border: 1px solid #555; }
+    select { background: #222; color: #fff; border: 1px solid #555; width: 100%; }
     button {
       background: #009b3a;
       color: white;
       font-weight: bold;
       cursor: pointer;
+      width: 100%;
     }
     button:hover { background: #007a2e; }
-    .setting-group { margin: 12px 0; text-align: left; display: inline-block; }
+    .setting-group { margin: 12px 0; text-align: left; }
     label { display: block; font-size: 0.9rem; color: #aaa; margin-bottom: 4px; }
     #game-container {
       display: none;
@@ -83,7 +84,7 @@
       justify-content: center;
       font-weight: bold;
       color: #fed100;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       text-transform: uppercase;
       transition: all 0.2s ease;
       user-select: none;
@@ -141,6 +142,8 @@
     #hand-container {
       margin-top: 15px;
       text-align: center;
+      width: 100%;
+      max-width: 900px;
     }
     #hand {
       display: flex;
@@ -156,15 +159,36 @@
       cursor: grabbing;
       opacity: 0.6;
     }
-    .domino.selectable:hover {
-      transform: translateY(-8px);
-      box-shadow: 0 0 12px #fed100;
-      border-color: #fed100;
+    .domino.unplayable {
+      opacity: 0.4;
+      filter: grayscale(60%);
     }
     #status {
       margin: 10px;
       font-size: 1.1rem;
       color: #fed100;
+    }
+
+    /* CHOICE MODAL FOR DUAL-END MATCHES */
+    #choice-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.7);
+      justify-content: center;
+      align-items: center;
+      z-index: 100;
+    }
+    .modal-content {
+      background: #222;
+      padding: 25px;
+      border-radius: 8px;
+      border: 2px solid #fed100;
+      text-align: center;
+    }
+    .modal-content button {
+      margin: 10px;
+      width: 120px;
     }
   </style>
 </head>
@@ -187,21 +211,29 @@
           <option value="2">2 Players</option>
         </select>
       </div>
-      <br>
       <div class="setting-group">
         <label>Hand Size per Player:</label>
         <select id="hand-size">
           <option value="7">7 Tiles</option>
         </select>
       </div>
-      <br>
-      <button onclick="createRoom()">Create Table</button>
+      <button onclick="createRoom()" style="margin-top: 10px;">Create Table</button>
     </div>
     
-    <div style="margin-top: 20px; border-top: 1px solid #444; padding-top: 15px;">
+    <div style="margin-top: 25px; border-top: 1px solid #444; padding-top: 15px;">
       <h3>Join Existing Table</h3>
-      <input type="text" id="room-input" placeholder="Enter Room Code/ID" />
-      <button onclick="joinRoom()">Join Table</button>
+      <input type="text" id="room-input" placeholder="Enter Room Code/ID" style="width:100%;" />
+      <button onclick="joinRoom()" style="background:#2196F3;">Join Table</button>
+    </div>
+  </div>
+
+  <!-- CHOICE MODAL FOR DUAL END MATCHES -->
+  <div id="choice-modal">
+    <div class="modal-content">
+      <h3>Tile fits both ends!</h3>
+      <p style="margin: 10px 0; color: #ccc;">Choose which end of the board to play on:</p>
+      <button id="choose-left" onclick="resolveChoice('left')" style="background:#009b3a;">Left End</button>
+      <button id="choose-right" onclick="resolveChoice('right')" style="background:#d32f2f;">Right End</button>
     </div>
   </div>
 
@@ -214,7 +246,7 @@
     <div id="hand-container">
       <h3>Your Hand</h3>
       <div id="hand"></div>
-      <button id="pass-btn" onclick="passTurn()" style="display:none; margin-top:12px; background:#d32f2f;">PASS TURN</button>
+      <button id="pass-btn" onclick="passTurn()" style="display:none; margin-top:12px; background:#d32f2f; width:auto; padding: 10px 25px;">PASS TURN</button>
     </div>
   </div>
 
@@ -237,71 +269,8 @@
 
     let myHand = [];
     let draggedTile = null;
+    let pendingTile = null;
 
     peer = new Peer();
 
-    peer.on('open', (id) => {
-      myPlayerId = id;
-      document.getElementById('status').innerText = `Your ID: ${id.substring(0, 5)}... Ready!`;
-      
-      const urlParams = new URLSearchParams(window.location.search);
-      const roomId = urlParams.get('room');
-      if (roomId) {
-        document.getElementById('room-input').value = roomId;
-        joinRoom();
-      }
-    });
-
-    peer.on('connection', (conn) => {
-      if (!isHost) return;
-      connections.push(conn);
-      
-      conn.on('open', () => {
-        if (gameState.players.length < gameState.maxPlayers && !gameState.gameStarted) {
-          gameState.players.push(conn.peer);
-          broadcastStatus(`Player joined (${gameState.players.length}/${gameState.maxPlayers})`);
-          
-          if (gameState.players.length === gameState.maxPlayers) {
-            startGame();
-          }
-        }
-      });
-
-      conn.on('data', (data) => handleAction(data, conn.peer));
-    });
-
-    function updateHandOptions() {
-      const maxP = parseInt(document.getElementById('max-players').value);
-      const handSelect = document.getElementById('hand-size');
-      handSelect.innerHTML = '';
-
-      if (maxP === 4) {
-        handSelect.innerHTML = `<option value="7">7 Tiles</option>`;
-      } else if (maxP === 3) {
-        handSelect.innerHTML = `
-          <option value="7">7 Tiles</option>
-          <option value="9">9 Tiles</option>
-        `;
-      } else if (maxP === 2) {
-        handSelect.innerHTML = `
-          <option value="7">7 Tiles</option>
-          <option value="14">14 Tiles</option>
-        `;
-      }
-    }
-
-    function createRoom() {
-      isHost = true;
-      gameState.maxPlayers = parseInt(document.getElementById('max-players').value);
-      gameState.handSize = parseInt(document.getElementById('hand-size').value);
-      gameState.players = [myPlayerId];
-
-      const roomLink = `${window.location.origin}${window.location.pathname}?room=${myPlayerId}`;
-      
-      document.getElementById('lobby').innerHTML = `
-        <h3>Table Created!</h3>
-        <p>Share this link with friends (${gameState.maxPlayers}-player table):</p>
-        <input type="text" value="${roomLink}" readonly style="width: 80%; text-align:center;" id="share-link"/>
-        <br>
-        <button onclick="navigator.clipboard.writeText('${roomLink}')">Copy Link</button>
-        <p style="margin-top:
+    peer.on('open', (id
