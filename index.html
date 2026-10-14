@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jamaican Domino Table</title>
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <!-- Load PeerJS cleanly -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js" defer></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -72,7 +73,6 @@
       min-width: max-content;
     }
 
-    /* DROP TARGET ZONES */
     .drop-zone {
       width: 50px;
       height: 90px;
@@ -95,7 +95,6 @@
       border-style: solid;
     }
 
-    /* DOMINO TILE STYLES */
     .domino {
       width: 46px;
       height: 88px;
@@ -169,7 +168,6 @@
       color: #fed100;
     }
 
-    /* CHOICE MODAL FOR DUAL-END MATCHES */
     #choice-modal {
       display: none;
       position: fixed;
@@ -196,7 +194,7 @@
 
   <header>
     <h1>JAMAICAN DOMINO TABLE 🁌</h1>
-    <div id="status">Connecting to network...</div>
+    <div id="status">Initializing network...</div>
   </header>
 
   <!-- LOBBY -->
@@ -217,13 +215,13 @@
           <option value="7">7 Tiles</option>
         </select>
       </div>
-      <button onclick="createRoom()" style="margin-top: 10px;">Create Table</button>
+      <button id="create-btn" onclick="createRoom()" style="margin-top: 10px;" disabled>Create Table</button>
     </div>
     
     <div style="margin-top: 25px; border-top: 1px solid #444; padding-top: 15px;">
       <h3>Join Existing Table</h3>
       <input type="text" id="room-input" placeholder="Enter Room Code/ID" style="width:100%;" />
-      <button onclick="joinRoom()" style="background:#2196F3;">Join Table</button>
+      <button id="join-btn" onclick="joinRoom()" style="background:#2196F3;" disabled>Join Table</button>
     </div>
   </div>
 
@@ -271,6 +269,33 @@
     let draggedTile = null;
     let pendingTile = null;
 
-    peer = new Peer();
+    // Safely wait for DOM and PeerJS to load
+    window.addEventListener('DOMContentLoaded', () => {
+      initPeer();
+    });
 
-    peer.on('open', (id
+    function initPeer() {
+      if (typeof Peer === 'undefined') {
+        document.getElementById('status').innerText = "Retrying connection to signaling server...";
+        setTimeout(initPeer, 1000);
+        return;
+      }
+
+      peer = new Peer();
+
+      peer.on('open', (id) => {
+        myPlayerId = id;
+        document.getElementById('status').innerText = `Connected! Ready to play.`;
+        document.getElementById('create-btn').disabled = false;
+        document.getElementById('join-btn').disabled = false;
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room');
+        if (roomId) {
+          document.getElementById('room-input').value = roomId;
+          joinRoom();
+        }
+      });
+
+      peer.on('error', (err) => {
+        console.error("PeerJS Error:", err);
