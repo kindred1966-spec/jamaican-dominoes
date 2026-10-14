@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jamaican Domino Table</title>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #121212;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    header {
+      width: 100%;
+      background: #000;
+      padding: 15px;
+      text-align: center;
+      border-bottom: 3px solid #009b3a;
+    }
+    h1 { color: #fed100; font-size: 1.5rem; margin-bottom: 8px; }
+    #lobby { margin: 20px; text-align: center; }
+    input, button {
+      padding: 10px 15px;
+      font-size: 1rem;
+      border-radius: 5px;
+      border: none;
+      margin: 5px;
+    }
+    button {
+      background: #009b3a;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:hover { background: #007a2e; }
+    #game-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 1000px;
+      margin-top: 10px;
+    }
+    #table {
+      width: 95%;
+      height: 440px;
+      background: #1b5e20;
+      border: 14px solid #3e2723;
+      border-radius: 12px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: auto;
+      box-shadow: inset 0 0 25px rgba(0,0,0,0.7);
+    }
+    #board-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 30px;
+      min-width: max-content;
+    }
+    
+    /* --- REALISTIC DOMINO TILE STYLES --- */
+    .domino {
+      width: 46px;
+      height: 88px;
+      background: #fffdfa;
+      border-radius: 6px;
+      border: 2px solid #333;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 2px 4px 8px rgba(0,0,0,0.5);
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.15s ease;
+    }
+    .domino.horizontal {
+      width: 88px;
+      height: 46px;
+      flex-direction: row;
+    }
+    .domino-half {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(3, 1fr);
+      padding: 3px;
+      gap: 2px;
+      align-items: center;
+      justify-items: center;
+    }
+    .divider {
+      height: 2px;
+      background: #222;
+      width: 100%;
+    }
+    .horizontal .divider {
+      width: 2px;
+      height: 100%;
+    }
+    .pip {
+      width: 7px;
+      height: 7px;
+      background-color: #111;
+      border-radius: 50%;
+    }
+    
+    /* --- HAND STYLES --- */
+    #hand-container {
+      margin-top: 15px;
+      text-align: center;
+    }
+    #hand {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .domino.selectable:hover {
+      transform: translateY(-10px);
+      box-shadow: 0 0 12px #fed100;
+      border-color: #fed100;
+    }
+    #status {
+      margin: 10px;
+      font-size: 1.1rem;
+      color: #fed100;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>JAMAICAN DOMINO TABLE 🁌</h1>
+    <div id="status">Connecting to network...</div>
+  </header>
+
+  <!-- LOBBY -->
+  <div id="lobby">
+    <div id="host-controls">
+      <button onclick="createRoom()">Create New Table</button>
+    </div>
+    <div style="margin-top: 15px;">
+      <input type="text" id="room-input" placeholder="Enter Room Code" />
+      <button onclick="joinRoom()">Join Table</button>
+    </div>
+  </div>
+
+  <!-- GAMEPLAY -->
+  <div id="game-container">
+    <div id="table">
+      <div id="board-line"></div>
+    </div>
+
+    <div id="hand-container">
+      <h3>Your Hand</h3>
+      <div id="hand"></div>
+      <button id="pass-btn" onclick="passTurn()" style="display:none; margin-top:12px; background:#d32f2f;">PASS TURN</button>
+    </div>
+  </div>
+
+  <script>
+    let peer = null;
+    let connections = [];
+    let hostConn = null;
+    let isHost = false;
+    let myPlayerId = null;
+
+    let gameState = {
+      players: [],
+      turnIndex: 0,
+      board: [],   
+      hands: {},   
+      gameStarted: false
+    };
+
+    let myHand = [];
+
+    peer = new Peer();
+
+    peer.on('open', (id) => {
+      myPlayerId = id;
+      document.getElementById('status').innerText = `Your ID: ${id.substring(0, 5)}... Ready!`;
+      
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomId = urlParams.get('room');
+      if (roomId) {
+        document.getElementById('room-input').value = roomId;
+        joinRoom();
+      }
+    });
+
+    peer.on('connection', (conn) => {
+      if (!isHost) return;
+      connections.push(conn);
+      
+      conn.on('open', () => {
+        if (gameState.players.length < 4 && !gameState.gameStarted) {
+          gameState.players.push(conn.peer);
+          broadcastStatus(`Player joined (${gameState.players.length}/4)`);
+          
+          if (gameState.players.length === 4) {
+            startGame();
+          }
+        }
+      });
+
+      conn.on('data', (data) => handleAction(data, conn.peer));
+    });
+
+    function createRoom() {
+      isHost = true;
+      gameState.players = [myPlayerId];
+      const roomLink = `${window.location.origin}${window.location.pathname}?room=${myPlayerId}`;
+      
+      document.getElementById('lobby').innerHTML = `
+        <p>Share this link with 3 friends:</p>
+        <input type="text" value="${roomLink}" readonly style="width: 80%; text-align:center;" id="share-link"/>
+        <button onclick="navigator.clipboard.writeText('${roomLink}')">Copy Link</button>
+        <p style="margin-top:10px;">Waiting for players (1/4)...</p>
+      `;
+      document.getElementById('game-container').style.display = 'flex';
+    }
+
+    function joinRoom() {
+      const hostId = document.getElementById('room-input').value.trim();
+      if (!hostId) return;
+
+      hostConn = peer.connect(hostId);
+      
+      hostConn.on('open', () => {
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('game-container').style.display = 'flex';
+        document.getElementById('status').innerText = "Connected! Waiting for host to start...";
+      });
+
+      hostConn.on('data', (data) => updateClient(data));
+    }
+
+    // --- GAME ENGINE ---
+
+    function generateDeck() {
+      let deck = [];
+      for (let i = 0; i <= 6; i++) {
+        for (let j = i; j <= 6; j++) {
+          deck.push({ left: i, right: j });
+        }
+      }
+      return deck.sort(() => Math.random() - 0.5);
+    }
+
+    function startGame() {
+      const deck = generateDeck();
+      gameState.board = [];
+      gameState.gameStarted = true;
+      
+      gameState.players.forEach((pId, idx) => {
+        gameState.hands[pId] = deck.slice(idx * 7, (idx + 1) * 7);
+      });
+
+      // Find [6-6] player to Pose
+      gameState.players.forEach((pId, idx) => {
+        if (gameState.hands[pId].some(t => t.left === 6 && t.right === 6)) {
+          gameState.turnIndex = idx;
+        }
+      });
+
+      syncState();
+    }
+
+    function handleAction(action, playerId) {
+      if (!isHost) return;
+      const currentTurnPlayer = gameState.players[gameState.turnIndex];
+      if (playerId !== currentTurnPlayer) return;
+
+      if (action.type === 'PLAY_TILE') {
+        const { tile, side } = action;
+        
+        gameState.hands[playerId] = gameState.hands[playerId].filter(
+          t => !(t.left === tile.left && t.right === tile.right)
+        );
+
+        if (gameState.board.length === 0) {
+          gameState.board.push(tile);
+        } else if (side === 'left') {
+          if (tile.right !== gameState.board[0].left) {
+            let temp = tile.left; tile.left = tile.right; tile.right = temp;
+          }
+          gameState.board.unshift(tile);
+        } else {
+          if (tile.left !== gameState.board[gameState.board.length - 1].right) {
+            let temp = tile.left; tile.left = tile.right; tile.right = temp;
+          }
+          gameState.board.push(tile);
+        }
+
+        if (gameState.hands[playerId].length === 0) {
+          broadcastStatus(`GAME OVER! Player ${playerId.substring(0,4)} Dominoed!`);
+          syncState();
+          return;
+        }
+
+        gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
+        syncState();
+      } else if (action.type === 'PASS') {
+        gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
+        syncState();
+      }
+    }
+
+    function syncState() {
+      connections.forEach(conn => {
+        conn.send({
+          type: 'SYNC',
+          state: {
+            ...gameState,
+            myHand: gameState.hands[conn.peer]
+          }
+        });
+      });
+
+      updateClient({
+        type: 'SYNC',
+        state: {
+          ...gameState,
+          myHand: gameState.hands[myPlayerId]
+        }
+      });
+    }
+
+    // --- PIP RENDERING UTILITY ---
+
+    const pipMap = {
+      0: [],
+      1: [4],
+      2: [0, 8],
+      3: [0, 4, 8],
+      4: [0, 2, 6, 8],
+      5: [0, 2, 4, 6, 8],
+      6: [0, 2, 3, 5, 6, 8]
+    };
+
+    function createHalfElement(count) {
+      const halfDiv = document.createElement('div');
+      halfDiv.className = 'domino-half';
+      
+      const positions = pipMap[count] || [];
+      for (let i = 0; i < 9; i++) {
+        const cell = document.createElement('div');
+        if (positions.includes(i)) {
+          cell.className = 'pip';
+        }
+        halfDiv.appendChild(cell);
+      }
+      return halfDiv;
+    }
+
+    function renderDominoNode(tile, isBoardTile) {
+      const isDouble = tile.left === tile.right;
+      const div = document.createElement('div');
+      
+      div.className = `domino ${isBoardTile && !isDouble ? 'horizontal' : ''}`;
+      
+      const half1 = createHalfElement(tile.left);
+      const divider = document.createElement('div');
+      divider.className = 'divider';
+      const half2 = createHalfElement(tile.right);
+
+      div.appendChild(half1);
+      div.appendChild(divider);
+      div.appendChild(half2);
+
+      return div;
+    }
+
+    // --- CLIENT UI ---
+
+    function updateClient(payload) {
+      if (payload.type === 'SYNC') {
+        const state = payload.state;
+        myHand = state.myHand || [];
+        
+        const activePlayer = state.players[state.turnIndex];
+        const isMyTurn = activePlayer === myPlayerId;
+
+        document.getElementById('status').innerText = isMyTurn 
+          ? "YOUR TURN! Select a tile to play." 
+          : `Player ${state.turnIndex + 1}'s Turn...`;
+
+        renderBoard(state.board);
+        renderHand(myHand, state.board, isMyTurn);
+      }
+    }
+
+    function renderBoard(board) {
+      const boardElem = document.getElementById('board-line');
+      boardElem.innerHTML = '';
+
+      board.forEach(tile => {
+        const dominoNode = renderDominoNode(tile, true);
+        boardElem.appendChild(dominoNode);
+      });
+    }
+
+    function renderHand(hand, board, isMyTurn) {
+      const handElem = document.getElementById('hand');
+      const passBtn = document.getElementById('pass-btn');
+      handElem.innerHTML = '';
+      
+      let hasPlayable = false;
+
+      hand.forEach(tile => {
+        const div = renderDominoNode(tile, false);
+
+        if (isMyTurn) {
+          const validSide = getPlayableSide(tile, board);
+          if (validSide) {
+            hasPlayable = true;
+            div.classList.add('selectable');
+            div.onclick = () => sendPlay(tile, validSide);
+          }
+        }
+
+        handElem.appendChild(div);
+      });
+
+      passBtn.style.display = (isMyTurn && !hasPlayable && board.length > 0) ? 'inline-block' : 'none';
+    }
+
+    function getPlayableSide(tile, board) {
+      if (board.length === 0) return 'center';
+      
+      const leftEnd = board[0].left;
+      const rightEnd = board[board.length - 1].right;
+
+      if (tile.left === leftEnd || tile.right === leftEnd) return 'left';
+      if (tile.left === rightEnd || tile.right === rightEnd) return 'right';
+
+      return null;
+    }
+
+    function sendPlay(tile, side) {
+      const payload = { type: 'PLAY_TILE', tile, side };
+      if (isHost) {
+        handleAction(payload, myPlayerId);
+      } else {
+        hostConn.send(payload);
+      }
+    }
+
+    function passTurn() {
+      const payload = { type: 'PASS' };
+      if (isHost) {
+        handleAction(payload, myPlayerId);
+      } else {
+        hostConn.send(payload);
+      }
+    }
+
+    function broadcastStatus(msg) {
+      document.getElementById('status').innerText = msg;
+    }
+  </script>
+</body>
+</html>
