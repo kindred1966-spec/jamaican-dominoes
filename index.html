@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jamaican Domino Table</title>
-  <!-- Load PeerJS cleanly -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js" defer></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -221,17 +220,17 @@
     <div style="margin-top: 25px; border-top: 1px solid #444; padding-top: 15px;">
       <h3>Join Existing Table</h3>
       <input type="text" id="room-input" placeholder="Enter Room Code/ID" style="width:100%;" />
-      <button id="join-btn" onclick="joinRoom()" style="background:#2196F3;" disabled>Join Table</button>
+      <button id="join-btn" onclick="joinRoom()" style="background:#2196F3;" disabled>Join Table / Spectate</button>
     </div>
   </div>
 
-  <!-- CHOICE MODAL FOR DUAL END MATCHES -->
+  <!-- CHOICE MODAL -->
   <div id="choice-modal">
     <div class="modal-content">
       <h3>Tile fits both ends!</h3>
       <p style="margin: 10px 0; color: #ccc;">Choose which end of the board to play on:</p>
-      <button id="choose-left" onclick="resolveChoice('left')" style="background:#009b3a;">Left End</button>
-      <button id="choose-right" onclick="resolveChoice('right')" style="background:#d32f2f;">Right End</button>
+      <button onclick="resolveChoice('left')" style="background:#009b3a;">Left End</button>
+      <button onclick="resolveChoice('right')" style="background:#d32f2f;">Right End</button>
     </div>
   </div>
 
@@ -242,21 +241,25 @@
     </div>
 
     <div id="hand-container">
-      <h3>Your Hand</h3>
+      <h3 id="hand-title">Your Hand</h3>
       <div id="hand"></div>
       <button id="pass-btn" onclick="passTurn()" style="display:none; margin-top:12px; background:#d32f2f; width:auto; padding: 10px 25px;">PASS TURN</button>
+      <button id="join-table-btn" onclick="requestJoinSeat()" style="display:none; margin-top:12px; background:#009b3a; width:auto; padding: 10px 25px;">JOIN OPEN SEAT</button>
     </div>
   </div>
 
   <script>
     let peer = null;
-    let connections = [];
+    let connections = []; // Host tracker for players
+    let spectatorConns = []; // Host tracker for spectators
     let hostConn = null;
     let isHost = false;
+    let isSpectator = false;
     let myPlayerId = null;
 
     let gameState = {
       players: [],
+      spectators: [],
       maxPlayers: 4,
       handSize: 7,
       turnIndex: 0,
@@ -269,14 +272,12 @@
     let draggedTile = null;
     let pendingTile = null;
 
-    // Safely wait for DOM and PeerJS to load
     window.addEventListener('DOMContentLoaded', () => {
       initPeer();
     });
 
     function initPeer() {
       if (typeof Peer === 'undefined') {
-        document.getElementById('status').innerText = "Retrying connection to signaling server...";
         setTimeout(initPeer, 1000);
         return;
       }
@@ -298,4 +299,363 @@
       });
 
       peer.on('error', (err) => {
-        console.error("PeerJS Error:", err);
+        document.getElementById('status').innerText = `Connection issue (${err.type}). Refresh page.`;
+      });
+
+      peer.on('connection', (conn) => {
+        if (!isHost) return;
+        
+        conn.on('open', () => {
+          // Check if table is full
+          if (gameState.players.length < gameState.maxPlayers && !gameState.gameStarted) {
+            gameState.players.push(conn.peer);
+            connections.push(conn);
+            broadcastStatus(`Player joined (${gameState.players.length}/${gameState.maxPlayers})`);
+            
+            if (gameState.players.length === gameState.maxPlayers) {
+              startGame();
+            } else {
+              syncState();
+            }
+          } else {
+            // Table full or game started -> Route to Spectators
+            spectatorConns.push(conn);
+            gameState.spectators.push(conn.peer);
+            conn.send({ type: 'NOTIFY_SPECTATOR' });
+            syncState();
+          }
+        });
+
+        conn.on('data', (data) => handleAction(data, conn.peer));
+        
+        conn.on('close', () => {
+          handleDisconnection(conn.peer);
+        });
+      });
+    }
+
+    function handleDisconnection(peerId) {
+      if (!isHost) return;
+      // Remove from players if present
+      gameState.players = gameState.players.filter(p => p !== peerId);
+      connections = connections.filter(c => c.peer !== peerId);
+      
+      // Remove from spectators if present
+      gameState.spectators = gameState.spectators.filter(s => s !== peerId);
+      spectatorConns = spectatorConns.filter(c => c.peer !== peerId);
+
+      broadcastStatus(`A user disconnected. Open seats available.`);
+      syncState();
+    }
+
+    function updateHandOptions() {
+      const maxP = parseInt(document.getElementById('max-players').value);
+      const handSelect = document.getElementById('hand-size');
+      handSelect.innerHTML = '';
+
+      if (maxP === 4) {
+        handSelect.innerHTML = `<option value="7">7 Tiles</option>`;
+      } else if (maxP === 3) {
+        handSelect.innerHTML = `
+          <option value="7">7 Tiles</option>
+          <option value="9">9 Tiles</option>
+        `;
+      } else if (maxP === 2) {
+        handSelect.innerHTML = `
+          <option value="7">7 Tiles</option>
+          <option value="14">14 Tiles</option>
+        `;
+      }
+    }
+
+    function createRoom() {
+      if (!myPlayerId) return;
+      isHost = true;
+      gameState.maxPlayers = parseInt(document.getElementById('max-players').value);
+      gameState.handSize = parseInt(document.getElementById('hand-size').value);
+      gameState.players = [myPlayerId];
+
+      const roomLink = `${window.location.origin}${window.location.pathname}?room=${myPlayerId}`;
+      
+      document.getElementById('lobby').innerHTML = `
+        <h3>Table Created!</h3>
+        <p style="margin: 10px 0;">Share this link with friends (${gameState.maxPlayers}-player table):</p>
+        <input type="text" value="${roomLink}" readonly style="width: 100%; text-align:center;" id="share-link"/>
+        <button onclick="navigator.clipboard.writeText('${roomLink}')" style="margin-top:10px;">Copy Link</button>
+        <p style="margin-top:15px; color:#fed100;">Waiting for players (1/${gameState.maxPlayers})...</p>
+      `;
+      document.getElementById('game-container').style.display = 'flex';
+    }
+
+    function joinRoom() {
+      const hostId = document.getElementById('room-input').value.trim();
+      if (!hostId || !peer) return;
+
+      hostConn = peer.connect(hostId);
+      
+      hostConn.on('open', () => {
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('game-container').style.display = 'flex';
+        document.getElementById('status').innerText = "Connected to table!";
+      });
+
+      hostConn.on('data', (data) => {
+        if (data.type === 'NOTIFY_SPECTATOR') {
+          isSpectator = true;
+          document.getElementById('hand-title').innerText = "Spectator View (Table Full)";
+          document.getElementById('join-table-btn').style.display = 'inline-block';
+        }
+        updateClient(data);
+      });
+    }
+
+    function requestJoinSeat() {
+      if (!isSpectator || !hostConn) return;
+      hostConn.send({ type: 'REQUEST_JOIN_SEAT', peerId: myPlayerId });
+    }
+
+    // --- GAME ENGINE ---
+
+    function generateDeck() {
+      let deck = [];
+      for (let i = 0; i <= 6; i++) {
+        for (let j = i; j <= 6; j++) {
+          deck.push({ left: i, right: j });
+        }
+      }
+      return deck.sort(() => Math.random() - 0.5);
+    }
+
+    function startGame() {
+      const deck = generateDeck();
+      gameState.board = [];
+      gameState.gameStarted = true;
+      
+      const hSize = gameState.handSize;
+      gameState.players.forEach((pId, idx) => {
+        gameState.hands[pId] = deck.slice(idx * hSize, (idx + 1) * hSize);
+      });
+
+      gameState.turnIndex = 0;
+      gameState.players.forEach((pId, idx) => {
+        if (gameState.hands[pId].some(t => t.left === 6 && t.right === 6)) {
+          gameState.turnIndex = idx;
+        }
+      });
+
+      syncState();
+    }
+
+    function handleAction(action, playerId) {
+      if (!isHost) return;
+
+      if (action.type === 'REQUEST_JOIN_SEAT') {
+        if (gameState.players.length < gameState.maxPlayers && gameState.spectators.includes(action.peerId)) {
+          // Promote spectator to player
+          gameState.spectators = gameState.spectators.filter(s => s !== action.peerId);
+          gameState.players.push(action.peerId);
+          
+          // Re-route connection tracking
+          let conn = spectatorConns.find(c => c.peer === action.peerId);
+          spectatorConns = spectatorConns.filter(c => c.peer !== action.peerId);
+          if (conn) connections.push(conn);
+
+          // Deal a hand if game has started
+          if (gameState.gameStarted) {
+            let deck = generateDeck();
+            gameState.hands[action.peerId] = deck.slice(0, gameState.handSize);
+          }
+          syncState();
+        }
+        return;
+      }
+
+      const currentTurnPlayer = gameState.players[gameState.turnIndex];
+      if (playerId !== currentTurnPlayer) return;
+
+      if (action.type === 'PLAY_TILE') {
+        const { tile, side } = action;
+        
+        gameState.hands[playerId] = gameState.hands[playerId].filter(
+          t => !(t.left === tile.left && t.right === tile.right)
+        );
+
+        if (gameState.board.length === 0) {
+          gameState.board.push(tile);
+        } else if (side === 'left') {
+          if (tile.right !== gameState.board[0].left) {
+            let temp = tile.left; tile.left = tile.right; tile.right = temp;
+          }
+          gameState.board.unshift(tile);
+        } else if (side === 'right') {
+          if (tile.left !== gameState.board[gameState.board.length - 1].right) {
+            let temp = tile.left; tile.left = tile.right; tile.right = temp;
+          }
+          gameState.board.push(tile);
+        }
+
+        if (gameState.hands[playerId].length === 0) {
+          broadcastStatus(`GAME OVER! Player ${playerId.substring(0,4)} Dominoed!`);
+          syncState();
+          return;
+        }
+
+        gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
+        syncState();
+      } else if (action.type === 'PASS') {
+        gameState.turnIndex = (gameState.turnIndex + 1) % gameState.players.length;
+        syncState();
+      }
+    }
+
+    function syncState() {
+      // Sync to all active players
+      connections.forEach(conn => {
+        conn.send({
+          type: 'SYNC',
+          state: {
+            ...gameState,
+            myHand: gameState.hands[conn.peer]
+          }
+        });
+      });
+
+      // Sync to spectators (empty hand)
+      spectatorConns.forEach(conn => {
+        conn.send({
+          type: 'SYNC',
+          state: {
+            ...gameState,
+            myHand: []
+          }
+        });
+      });
+
+      // Update host screen
+      updateClient({
+        type: 'SYNC',
+        state: {
+          ...gameState,
+          myHand: gameState.hands[myPlayerId] || []
+        }
+      });
+    }
+
+    // --- PIP RENDERING ---
+
+    const pipMap = {
+      0: [],
+      1: [4],
+      2: [0, 8],
+      3: [0, 4, 8],
+      4: [0, 2, 6, 8],
+      5: [0, 2, 4, 6, 8],
+      6: [0, 2, 3, 5, 6, 8]
+    };
+
+    function createHalfElement(count) {
+      const halfDiv = document.createElement('div');
+      halfDiv.className = 'domino-half';
+      
+      const positions = pipMap[count] || [];
+      for (let i = 0; i < 9; i++) {
+        const cell = document.createElement('div');
+        if (positions.includes(i)) {
+          cell.className = 'pip';
+        }
+        halfDiv.appendChild(cell);
+      }
+      return halfDiv;
+    }
+
+    function renderDominoNode(tile, isBoardTile) {
+      const isDouble = tile.left === tile.right;
+      const div = document.createElement('div');
+      
+      div.className = `domino ${isBoardTile && !isDouble ? 'horizontal' : ''}`;
+      
+      const half1 = createHalfElement(tile.left);
+      const divider = document.createElement('div');
+      divider.className = 'divider';
+      const half2 = createHalfElement(tile.right);
+
+      div.appendChild(half1);
+      div.appendChild(divider);
+      div.appendChild(half2);
+
+      return div;
+    }
+
+    // --- CLIENT UI ---
+
+    function updateClient(payload) {
+      if (payload.type === 'SYNC') {
+        const state = payload.state;
+        myHand = state.myHand || [];
+        
+        const activePlayer = state.players[state.turnIndex];
+        const isMyTurn = (!isSpectator && activePlayer === myPlayerId);
+
+        if (isSpectator) {
+          document.getElementById('status').innerText = `Spectating Live Table (${state.players.length}/${state.maxPlayers} players seated)`;
+          if (state.players.length < state.maxPlayers) {
+            document.getElementById('join-table-btn').style.display = 'inline-block';
+          } else {
+            document.getElementById('join-table-btn').style.display = 'none';
+          }
+        } else {
+          document.getElementById('status').innerText = isMyTurn 
+            ? "YOUR TURN! Drag a matching tile onto the table." 
+            : `Player ${state.turnIndex + 1}'s Turn...`;
+        }
+
+        renderBoard(state.board);
+        renderHand(myHand, state.board, isMyTurn);
+      }
+    }
+
+    function renderBoard(board) {
+      const boardElem = document.getElementById('board-line');
+      boardElem.innerHTML = '';
+
+      if (board.length === 0) {
+        const centerZone = document.createElement('div');
+        centerZone.className = 'drop-zone';
+        centerZone.innerText = 'Pose [6-6]';
+        if (!isSpectator) setupDropZoneEvents(centerZone, 'center');
+        boardElem.appendChild(centerZone);
+        return;
+      }
+
+      const leftZone = document.createElement('div');
+      leftZone.className = 'drop-zone';
+      leftZone.innerText = 'Left';
+      if (!isSpectator) setupDropZoneEvents(leftZone, 'left');
+      boardElem.appendChild(leftZone);
+
+      board.forEach(tile => {
+        const dominoNode = renderDominoNode(tile, true);
+        boardElem.appendChild(dominoNode);
+      });
+
+      const rightZone = document.createElement('div');
+      rightZone.className = 'drop-zone';
+      rightZone.innerText = 'Right';
+      if (!isSpectator) setupDropZoneEvents(rightZone, 'right');
+      boardElem.appendChild(rightZone);
+    }
+
+    function renderHand(hand, board, isMyTurn) {
+      const handElem = document.getElementById('hand');
+      const passBtn = document.getElementById('pass-btn');
+      handElem.innerHTML = '';
+      
+      let hasPlayable = false;
+
+      hand.forEach(tile => {
+        const div = renderDominoNode(tile, false);
+        const validSides = getValidPlaySides(tile, board);
+
+        if (isMyTurn) {
+          if (validSides.length > 0) {
+            hasPlayable = true
